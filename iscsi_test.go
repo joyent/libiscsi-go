@@ -13,7 +13,7 @@ import (
 	"github.com/gostor/gotgt/pkg/scsi"
 	_ "github.com/gostor/gotgt/pkg/scsi/backingstore"
 	"github.com/hashicorp/consul/sdk/freeport"
-	iscsi "github.com/willgorman/libiscsi-go"
+	iscsi "github.com/joyent/libiscsi-go"
 	"gotest.tools/assert"
 )
 

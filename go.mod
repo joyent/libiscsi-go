@@ -1,4 +1,4 @@
-module github.com/willgorman/libiscsi-go
+module github.com/joyent/libiscsi-go
 
 go 1.23.1
 

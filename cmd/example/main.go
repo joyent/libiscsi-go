@@ -4,8 +4,8 @@ import (
 	"log"
 	"os"
 
+	iscsi "github.com/joyent/libiscsi-go"
 	"github.com/sanity-io/litter"
-	iscsi "github.com/willgorman/libiscsi-go"
 )
 
 func main() {
