@@ -67,31 +67,17 @@ func (w *writer) WriteAt(p []byte, off int64) (n int, err error) {
 
 	logger().Debug("WriteAt", slog.Int("bytes", len(p)), slog.Int("offset", int(off)))
 
-	startBlock := off / w.blocksize
-	blocks := int(size / w.blocksize)
-
-	var written int
-	for block := range blocks {
-		lba := startBlock + int64(block)
-
-		// data offsets
-		start := int64(block) * w.blocksize
-		end := start + min(w.blocksize, size)
-
-		writeErr := w.dev.Write16(Write16{
-			LBA:       int(lba),
-			BlockSize: int(w.blocksize),
-			Data:      p[start:end],
-		})
-		if writeErr != nil {
-			return written, fmt.Errorf("iscsi device write error: %w", writeErr)
-		}
-
-		written += len(p[start:end])
+	writeErr := w.dev.Write16(Write16{
+		LBA:       int(off / w.blocksize),
+		BlockSize: int(w.blocksize),
+		Data:      p,
+	})
+	if writeErr != nil {
+		return 0, fmt.Errorf("iscsi device write error: %w", writeErr)
 	}
 
 	logger().Debug("finished write", slog.Int("length", len(p)))
-	return written, err
+	return len(p), err
 }
 
 func (w *writer) Seek(offset int64, whence int) (int64, error) {
