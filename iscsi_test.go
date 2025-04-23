@@ -13,7 +13,7 @@ import (
 	"github.com/gostor/gotgt/pkg/scsi"
 	_ "github.com/gostor/gotgt/pkg/scsi/backingstore"
 	"github.com/hashicorp/consul/sdk/freeport"
-	iscsi "github.com/willgorman/libiscsi-go"
+	iscsi "github.com/joyent/libiscsi-go"
 	"gotest.tools/assert"
 )
 
@@ -121,7 +121,6 @@ func runTestTarget(t testing.TB, targetFile string) (url string) {
 	}
 	go targetDriver.Run(port)
 	t.Cleanup(func() { _ = targetDriver.Close() })
-
 	return fmt.Sprintf("iscsi://127.0.0.1:%d/%s/0", port, targetIQN)
 }
 
