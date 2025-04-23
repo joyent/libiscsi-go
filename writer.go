@@ -64,6 +64,9 @@ func (w *writer) WriteAt(p []byte, off int64) (n int, err error) {
 			len(p), w.blocksize,
 		)
 	}
+	if off%w.blocksize != 0 {
+		return 0, fmt.Errorf("unaligned write: offset %d is not divisible by block size %d", off, w.blocksize)
+	}
 
 	logger().Debug("WriteAt", slog.Int("bytes", len(p)), slog.Int("offset", int(off)))
 
