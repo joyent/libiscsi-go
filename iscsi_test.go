@@ -121,6 +121,7 @@ func runTestTarget(t testing.TB, targetFile string) (url string) {
 	}
 	go targetDriver.Run(port)
 	t.Cleanup(func() { _ = targetDriver.Close() })
+
 	return fmt.Sprintf("iscsi://127.0.0.1:%d/%s/0", port, targetIQN)
 }
 

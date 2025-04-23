@@ -49,7 +49,6 @@ func (r *reader) Read(p []byte) (n int, err error) {
 	r.waiter.Add(1)
 	defer r.waiter.Done()
 
-	logger().Debug("ReadAt", slog.Int("bytes", len(p)), slog.Int("offset", int(r.offset)))
 	readLen, err := r.ReadAt(p, r.offset)
 	r.offset += int64(readLen)
 	return readLen, err
@@ -111,7 +110,7 @@ func (r *reader) ReadAt(p []byte, off int64) (n int, err error) {
 		result = readBytes[:l]
 	}
 
-	logger().Debug("finished read", slog.Int("length", len(result)))
+	logger().Debug("finished read", slog.Int("bytes", len(result)))
 	return copy(p, result), err
 }
 

@@ -1,6 +1,7 @@
 package iscsi
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ type writer struct {
 	dev       *device
 	lba       int64
 	blocksize int64
+	offset    int64
 
 	closed atomic.Bool
 	waiter sync.WaitGroup
@@ -36,6 +38,12 @@ func (w *writer) Close() error {
 	return w.dev.Disconnect()
 }
 
+func (w *writer) Write(p []byte) (n int, err error) {
+	writeLen, err := w.WriteAt(p, w.offset)
+	w.offset += int64(writeLen)
+	return writeLen, err
+}
+
 func (w *writer) WriteAt(p []byte, off int64) (n int, err error) {
 	if w.closed.Load() {
 		return 0, ErrDeviceClosed
@@ -46,13 +54,14 @@ func (w *writer) WriteAt(p []byte, off int64) (n int, err error) {
 
 	size := int64(len(p))
 	endOffset := off + size
-	if endOffset >= w.blocksize*w.lba {
-		logger().Debug("offset past at EOF", slog.Int("offset", int(off)))
-		return 0, io.EOF
+	if endOffset > w.blocksize*w.lba {
+		return 0, fmt.Errorf("%w: final offset %d past max offset %d",
+			io.EOF, endOffset, w.blocksize*w.lba,
+		)
 	}
 	if len(p)%int(w.blocksize) != 0 {
-		return 0, fmt.Errorf(
-			"number of bytes %d not divisible by block size %d", len(p), w.blocksize,
+		return 0, fmt.Errorf("number of bytes %d not divisible by block size %d",
+			len(p), w.blocksize,
 		)
 	}
 
@@ -63,7 +72,7 @@ func (w *writer) WriteAt(p []byte, off int64) (n int, err error) {
 
 	var written int
 	for block := range blocks {
-		lba := startBlock + int64(block)*w.blocksize
+		lba := startBlock + int64(block)
 
 		// data offsets
 		start := int64(block) * w.blocksize
@@ -83,4 +92,30 @@ func (w *writer) WriteAt(p []byte, off int64) (n int, err error) {
 
 	logger().Debug("finished write", slog.Int("length", len(p)))
 	return written, err
+}
+
+func (w *writer) Seek(offset int64, whence int) (int64, error) {
+	if w.closed.Load() {
+		return 0, ErrDeviceClosed
+	}
+
+	w.waiter.Add(1)
+	defer w.waiter.Done()
+
+	var abs int64
+	switch whence {
+	case io.SeekStart:
+		abs = offset
+	case io.SeekCurrent:
+		abs = w.offset + offset
+	case io.SeekEnd:
+		abs = w.lba*w.blocksize + offset
+	default:
+		return 0, errors.New("iscsi.Writer.Seek: invalid whence")
+	}
+	if abs < 0 {
+		return 0, errors.New("iscsi.Writer.Seek: negative position")
+	}
+	w.offset = abs
+	return abs, nil
 }
