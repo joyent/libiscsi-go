@@ -19,8 +19,12 @@ type reader struct {
 	waiter sync.WaitGroup
 }
 
+// ErrDeviceClosed indicates that an operation cannot be performed because
+// the device has been closed.
 var ErrDeviceClosed = errors.New("device is closed")
 
+// Reader implements io.Reader, io.ReaderAt, io.Closer, and io.Seeker for
+// an underlying ISCSI device. The device must be already connected.
 func Reader(dev *device) (*reader, error) {
 	c, err := dev.ReadCapacity16()
 	if err != nil {
@@ -35,6 +39,10 @@ func Reader(dev *device) (*reader, error) {
 	}, nil
 }
 
+// Close is a concurrency-safe method that disconnects the underlying ISCSI device
+// after waiting for any in-flight reads to complete. However, as a result, if
+// the read(s) take a long time to complete for any reason, this method may take a
+// while to finish and return, so calls can be wrapped in a goroutine if needed.
 func (r *reader) Close() error {
 	r.closed.Store(true)
 	r.waiter.Wait()

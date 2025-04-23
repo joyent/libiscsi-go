@@ -19,6 +19,8 @@ type writer struct {
 	waiter sync.WaitGroup
 }
 
+// Writer implements io.Writer, io.WriterAt, io.Closer, and io.Seeker for
+// an underlying ISCSI device. The device must be already connected.
 func Writer(dev *device) (*writer, error) {
 	c, err := dev.ReadCapacity16()
 	if err != nil {
@@ -32,6 +34,10 @@ func Writer(dev *device) (*writer, error) {
 	}, nil
 }
 
+// Close is a concurrency-safe method that disconnects the underlying ISCSI device
+// after waiting for any in-flight writes to complete. However, as a result, if
+// the write(s) takes a long time to complete for any reason, this method may take a
+// while to finish and return, so calls can be wrapped in a goroutine if needed.
 func (w *writer) Close() error {
 	w.closed.Store(true)
 	w.waiter.Wait()
@@ -83,6 +89,7 @@ func (w *writer) WriteAt(p []byte, off int64) (n int, err error) {
 	return len(p), err
 }
 
+// TODO: (naylorpmax-joyent) tests
 func (w *writer) Seek(offset int64, whence int) (int64, error) {
 	if w.closed.Load() {
 		return 0, ErrDeviceClosed
