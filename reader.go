@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 )
 
 type reader struct {
@@ -12,13 +14,23 @@ type reader struct {
 	lba       int64
 	offset    int64
 	blocksize int64
+
+	closed atomic.Bool
+	waiter sync.WaitGroup
 }
 
+// ErrDeviceClosed indicates that an operation cannot be performed because
+// the device has been closed.
+var ErrDeviceClosed = errors.New("device is closed")
+
+// Reader implements io.Reader, io.ReaderAt, io.Closer, and io.Seeker for
+// an underlying ISCSI device. The device must be already connected.
 func Reader(dev *device) (*reader, error) {
 	c, err := dev.ReadCapacity16()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get capacity of device: %w", err)
 	}
+
 	return &reader{
 		dev:       dev,
 		lba:       int64(c.MaxLBA) + 1,
@@ -27,18 +39,37 @@ func Reader(dev *device) (*reader, error) {
 	}, nil
 }
 
+// Close is a concurrency-safe method that disconnects the underlying ISCSI device
+// after waiting for any in-flight reads to complete. However, as a result, if
+// the read(s) take a long time to complete for any reason, this method may take a
+// while to finish and return, so calls can be wrapped in a goroutine if needed.
 func (r *reader) Close() error {
+	r.closed.Store(true)
+	r.waiter.Wait()
 	return r.dev.Disconnect()
 }
 
 func (r *reader) Read(p []byte) (n int, err error) {
-	logger().Debug("ReadAt", slog.Int("bytes", len(p)), slog.Int("offset", int(r.offset)))
+	if r.closed.Load() {
+		return 0, ErrDeviceClosed
+	}
+
+	r.waiter.Add(1)
+	defer r.waiter.Done()
+
 	readLen, err := r.ReadAt(p, r.offset)
 	r.offset += int64(readLen)
 	return readLen, err
 }
 
 func (r *reader) ReadAt(p []byte, off int64) (n int, err error) {
+	if r.closed.Load() {
+		return 0, ErrDeviceClosed
+	}
+
+	r.waiter.Add(1)
+	defer r.waiter.Done()
+
 	if off >= r.blocksize*r.lba {
 		logger().Debug("offset past at EOF", slog.Int("offset", int(off)))
 		return 0, io.EOF
@@ -87,12 +118,19 @@ func (r *reader) ReadAt(p []byte, off int64) (n int, err error) {
 		result = readBytes[:l]
 	}
 
-	logger().Debug("finished read", slog.Int("length", len(result)))
+	logger().Debug("finished read", slog.Int("bytes", len(result)))
 	return copy(p, result), err
 }
 
 // TODO: (willgorman) tests
 func (r *reader) Seek(offset int64, whence int) (int64, error) {
+	if r.closed.Load() {
+		return 0, ErrDeviceClosed
+	}
+
+	r.waiter.Add(1)
+	defer r.waiter.Done()
+
 	var abs int64
 	switch whence {
 	case io.SeekStart:

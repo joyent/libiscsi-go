@@ -3,6 +3,7 @@ package iscsi_test
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -214,4 +215,71 @@ func TestSectionRead(t *testing.T) {
 	iscsiChecksum := fmt.Sprintf("%x", hash.Sum(nil))
 	t.Log("ISCSI CHECKSUM ", iscsiChecksum)
 	assert.Equal(t, sectionChecksum, iscsiChecksum)
+}
+
+func TestReader_Close(t *testing.T) {
+	// given
+	seed := time.Now().UnixNano()
+	t.Logf("using seed %d", seed)
+	rnd := rand.New(rand.NewSource(seed))
+	fileName := writeTargetTempfile(t, rnd, 4*KiB)
+	file, err := os.Open(fileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	device := iscsi.New(iscsi.ConnectionDetails{
+		InitiatorIQN: "iqn.2024-10.libiscsi:go",
+		TargetURL:    runTestTarget(t, fileName),
+	})
+
+	err = device.Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// when
+	sreader, err := iscsi.Reader(device)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	errRead := make(chan error, 1)
+	go func() {
+		data := make([]byte, 512)
+
+		for {
+			n, err := sreader.ReadAt(data, 0)
+			if errors.Is(err, iscsi.ErrDeviceClosed) {
+				// happy path
+				t.Logf("detected closed device: exiting")
+				break
+			}
+
+			if err != nil {
+				errRead <- err
+				return
+			}
+			if n != len(data) {
+				errRead <- fmt.Errorf("read wrong number of bytes: want=%d, got=%d", len(data), n)
+				return
+			}
+		}
+	}()
+
+	// and close after a little while
+	time.Sleep(1 * time.Second)
+
+	t.Log("closing device")
+	t0 := time.Now()
+	if err := sreader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closeTime := time.Since(t0)
+
+	// arbitrary-ish duration, just want to make sure this doesn't take a long time
+	if closeTime > time.Second {
+		t.Fatalf("device took longer than 1 second to close (%s)", closeTime)
+	}
 }
