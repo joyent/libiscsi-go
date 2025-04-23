@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 )
 
 type reader struct {
@@ -12,13 +14,19 @@ type reader struct {
 	lba       int64
 	offset    int64
 	blocksize int64
+
+	closed atomic.Bool
+	waiter sync.WaitGroup
 }
+
+var ErrDeviceClosed = errors.New("device is closed")
 
 func Reader(dev *device) (*reader, error) {
 	c, err := dev.ReadCapacity16()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get capacity of device: %w", err)
 	}
+
 	return &reader{
 		dev:       dev,
 		lba:       int64(c.MaxLBA) + 1,
@@ -28,10 +36,19 @@ func Reader(dev *device) (*reader, error) {
 }
 
 func (r *reader) Close() error {
+	r.closed.Store(true)
+	r.waiter.Wait()
 	return r.dev.Disconnect()
 }
 
 func (r *reader) Read(p []byte) (n int, err error) {
+	if r.closed.Load() {
+		return 0, ErrDeviceClosed
+	}
+
+	r.waiter.Add(1)
+	defer r.waiter.Done()
+
 	logger().Debug("ReadAt", slog.Int("bytes", len(p)), slog.Int("offset", int(r.offset)))
 	readLen, err := r.ReadAt(p, r.offset)
 	r.offset += int64(readLen)
@@ -39,6 +56,13 @@ func (r *reader) Read(p []byte) (n int, err error) {
 }
 
 func (r *reader) ReadAt(p []byte, off int64) (n int, err error) {
+	if r.closed.Load() {
+		return 0, ErrDeviceClosed
+	}
+
+	r.waiter.Add(1)
+	defer r.waiter.Done()
+
 	if off >= r.blocksize*r.lba {
 		logger().Debug("offset past at EOF", slog.Int("offset", int(off)))
 		return 0, io.EOF
@@ -93,6 +117,13 @@ func (r *reader) ReadAt(p []byte, off int64) (n int, err error) {
 
 // TODO: (willgorman) tests
 func (r *reader) Seek(offset int64, whence int) (int64, error) {
+	if r.closed.Load() {
+		return 0, ErrDeviceClosed
+	}
+
+	r.waiter.Add(1)
+	defer r.waiter.Done()
+
 	var abs int64
 	switch whence {
 	case io.SeekStart:
