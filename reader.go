@@ -78,7 +78,7 @@ func (r *reader) ReadAt(p []byte, off int64) (n int, err error) {
 	// find our starting lba
 	startBlock := off / r.blocksize
 	endOffset := len(p) + int(off)
-	blocks := (endOffset-int(off))/int(r.blocksize) + 1
+	blocks := (endOffset-int(off))/int(r.blocksize)
 	blocks = min(blocks, int(r.lba)-int(startBlock))
 
 	// handle EOF
