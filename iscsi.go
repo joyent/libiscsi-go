@@ -110,12 +110,12 @@ func (d *device) Connect() error {
 		portalStr := C.CString(d.targetPortal)
 		defer C.free(unsafe.Pointer(portalStr))
 		if retval := C.iscsi_full_connect_sync(d.Context, portalStr, C.int(d.targetLun)); retval != 0 {
-			errstr := C.iscsi_get_error(d.Context)
+			errstr := C.GoString(C.iscsi_get_error(d.Context))
 			// reset the context before retrying.  it seems like some connection
 			// errors leave the context in an inconsistent state that makes it
 			// difficult to reuse
 			d.initializeContext()
-			return fmt.Errorf("iscsi_full_connect_sync: (%d) %s", retval, C.GoString(errstr))
+			return fmt.Errorf("iscsi_full_connect_sync: (%d) %s", retval, errstr)
 		}
 		return nil
 	}, retry.Attempts(20), retry.MaxDelay(500*time.Millisecond))
