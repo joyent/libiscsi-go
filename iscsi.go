@@ -22,7 +22,6 @@ import (
 	"unsafe"
 
 	"github.com/avast/retry-go/v4"
-	_ "github.com/ianlancetaylor/cgosymbolizer"
 	gopointer "github.com/mattn/go-pointer"
 	"golang.org/x/sys/unix"
 )
