@@ -280,6 +280,107 @@ func (d *device) Read16Async(data Read16, tasks chan TaskResult) error {
 	return nil
 }
 
+// ProvisioningStatus describes whether a logical block reported by
+// GET LBA STATUS (SBC-3 5.15) is backed by real storage.
+type ProvisioningStatus int
+
+const (
+	ProvisioningStatusMapped      ProvisioningStatus = 0x00
+	ProvisioningStatusDeallocated ProvisioningStatus = 0x01
+	ProvisioningStatusAnchored    ProvisioningStatus = 0x02
+)
+
+// LBAStatusDescriptor describes the provisioning status of a contiguous
+// run of NumBlocks logical blocks starting at LBA.
+type LBAStatusDescriptor struct {
+	LBA          int64
+	NumBlocks    int64
+	Provisioning ProvisioningStatus
+}
+
+// GetLBAStatus issues a GET LBA STATUS command, which reports whether one
+// or more runs of logical blocks starting at or before startingLBA are
+// mapped, deallocated, or anchored, without transferring any of the
+// underlying data. allocLen bounds the size, in bytes, of the returned
+// descriptor list.
+func (d *device) GetLBAStatus(startingLBA int64, allocLen uint32) ([]LBAStatusDescriptor, error) {
+	state := &syncCallbackState{}
+	pdata := gopointer.Save(state)
+	defer gopointer.Unref(pdata)
+
+	if C.iscsi_get_lba_status_task(
+		d.Context, 0, C.uint64_t(startingLBA), C.uint32_t(allocLen), syncCB, pdata,
+	) == nil {
+		return nil, errors.New("unable to start iscsi_get_lba_status_task")
+	}
+	if err := d.eventLoop(state); err != nil {
+		return nil, fmt.Errorf("error while waiting for task completion: %w", err)
+	}
+
+	task := state.scsiTask
+	if task != nil {
+		defer C.scsi_free_scsi_task(task)
+	}
+	if task == nil || task.status != C.SCSI_STATUS_GOOD {
+		return nil, fmt.Errorf("iscsi_get_lba_status_sync: %s", C.GoString(C.iscsi_get_error(d.Context)))
+	}
+	return parseLBAStatus(*task)
+}
+
+func parseLBAStatus(task C.struct_scsi_task) ([]LBAStatusDescriptor, error) {
+	if task.cdb[0] != C.SCSI_OPCODE_SERVICE_ACTION_IN {
+		return nil, errors.New("unexpected opcode")
+	}
+	if task.cdb[1] != C.SCSI_GET_LBA_STATUS {
+		return nil, errors.New("unexpected subaction")
+	}
+	if task.datain.size == 0 {
+		return nil, nil
+	}
+	return parseLBAStatusData(C.GoBytes(unsafe.Pointer(task.datain.data), task.datain.size)), nil
+}
+
+// parseLBAStatusData parses the parameter data returned by GET LBA STATUS
+// (SBC-3 5.15.2): a 4 byte PARAMETER DATA LENGTH, 4 reserved bytes, then a
+// list of 16 byte LBA status descriptors.
+func parseLBAStatusData(data []byte) []LBAStatusDescriptor {
+	if len(data) < 8 {
+		return nil
+	}
+	end := min(int(binary.BigEndian.Uint32(data[0:4]))+4, len(data))
+
+	var descriptors []LBAStatusDescriptor
+	for offset := 8; offset+16 <= end; offset += 16 {
+		descriptors = append(descriptors, LBAStatusDescriptor{
+			LBA:          int64(binary.BigEndian.Uint64(data[offset : offset+8])),
+			NumBlocks:    int64(binary.BigEndian.Uint32(data[offset+8 : offset+12])),
+			Provisioning: ProvisioningStatus(data[offset+12] & 0x0f),
+		})
+	}
+	return descriptors
+}
+
+// getProvisioningInfo reports the LBPME (thin provisioning enabled) and
+// LBPRZ (deallocated/anchored blocks read back as zero) bits from
+// READ CAPACITY(16), used to decide whether it's safe to synthesize reads
+// of deallocated ranges locally.
+func (d device) getProvisioningInfo() (lbpme, lbprz bool, err error) {
+	task := C.iscsi_readcapacity16_sync(d.Context, 0)
+	defer func() {
+		if task != nil {
+			C.scsi_free_scsi_task(task)
+		}
+	}()
+	if task == nil || task.status != C.SCSI_STATUS_GOOD {
+		return false, false, fmt.Errorf("iscsi_readcapacity16_sync: %s", C.GoString(C.iscsi_get_error(d.Context)))
+	}
+	readcapacity, err := getReadCapacity16(*task)
+	if err != nil {
+		return false, false, err
+	}
+	return readcapacity.lbpme != 0, readcapacity.lbprz != 0, nil
+}
+
 func (d *device) eventLoop(state *syncCallbackState) error {
 	// TODO: (willgorman) handle a timeout (from iscsi_set_timeout)
 	// this gets set by iscsiSyncCB

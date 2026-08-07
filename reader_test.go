@@ -217,6 +217,81 @@ func TestSectionRead(t *testing.T) {
 	assert.Equal(t, sectionChecksum, iscsiChecksum)
 }
 
+func TestGetLBAStatus(t *testing.T) {
+	seed := time.Now().UnixNano()
+	t.Logf("using seed %d", seed)
+	rnd := rand.New(rand.NewSource(seed))
+	fileName := writeTargetTempfile(t, rnd, 4*KiB)
+
+	device := iscsi.New(iscsi.ConnectionDetails{
+		InitiatorIQN: "iqn.2024-10.libiscsi:go",
+		TargetURL:    runTestTarget(t, fileName),
+	})
+
+	err := device.Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = device.Disconnect()
+	}()
+
+	// the fake target used for tests doesn't actually track holes, so this
+	// just exercises the command round trip and confirms it doesn't error,
+	// rather than asserting on any particular provisioning status.
+	_, err = device.GetLBAStatus(0, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// SkipSparseRegions relies on the target reporting LBPRZ in its
+// READ CAPACITY(16) response before it will synthesize any reads locally.
+// The fake target used in these tests doesn't report LBPRZ, so enabling it
+// here should be a no-op: reads must still return exactly what was written.
+func TestReader_SkipSparseRegions_Fallback(t *testing.T) {
+	seed := time.Now().UnixNano()
+	t.Logf("using seed %d", seed)
+	rnd := rand.New(rand.NewSource(seed))
+	fileName := writeTargetTempfile(t, rnd, 4*KiB)
+	file, err := os.Open(fileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		log.Fatal(err)
+	}
+	fileChecksum := fmt.Sprintf("%x", hash.Sum(nil))
+
+	device := iscsi.New(iscsi.ConnectionDetails{
+		InitiatorIQN: "iqn.2024-10.libiscsi:go",
+		TargetURL:    runTestTarget(t, fileName),
+	})
+
+	err = device.Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = device.Disconnect()
+	}()
+
+	sreader, err := iscsi.Reader(device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sreader.SkipSparseRegions()
+
+	hash = sha256.New()
+	if _, err := io.Copy(hash, sreader); err != nil {
+		log.Fatal(err)
+	}
+	iscsiChecksum := fmt.Sprintf("%x", hash.Sum(nil))
+	assert.Equal(t, fileChecksum, iscsiChecksum)
+}
+
 func TestReader_Close(t *testing.T) {
 	// given
 	seed := time.Now().UnixNano()
