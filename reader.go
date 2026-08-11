@@ -62,6 +62,11 @@ func (r *reader) Read(p []byte) (n int, err error) {
 	return readLen, err
 }
 
+// ReadAt reads len(p) bytes from the device starting at byte offset off.  Reads
+// that are not block aligned are satisfied by reading the blocks that cover the
+// requested range.  It always reads len(p) bytes unless the request extends past
+// the last block of the device, in which case it returns the bytes up to the end
+// of the device along with io.EOF.
 func (r *reader) ReadAt(p []byte, off int64) (n int, err error) {
 	if r.closed.Load() {
 		return 0, ErrDeviceClosed
@@ -70,56 +75,58 @@ func (r *reader) ReadAt(p []byte, off int64) (n int, err error) {
 	r.waiter.Add(1)
 	defer r.waiter.Done()
 
-	if off >= r.blocksize*r.lba {
-		logger().Debug("offset past at EOF", slog.Int("offset", int(off)))
+	deviceSize := r.blocksize * r.lba
+	if off >= deviceSize {
+		logger().Debug("offset past at EOF", slog.Int64("offset", off))
 		return 0, io.EOF
 	}
-	logger().Debug("ReadAt", slog.Int("bytes", len(p)), slog.Int("offset", int(off)))
-	// find our starting lba
-	startBlock := off / r.blocksize
-	endOffset := len(p) + int(off)
-	blocks := (endOffset-int(off))/int(r.blocksize)
-	blocks = min(blocks, int(r.lba)-int(startBlock))
+	if len(p) == 0 {
+		return 0, nil
+	}
+	logger().Debug("ReadAt", slog.Int("bytes", len(p)), slog.Int64("offset", off))
 
-	// handle EOF
-	if (endOffset/int(r.blocksize)) > int(r.lba) || blocks == int(r.lba-startBlock) {
+	// clamp the request to the end of the device
+	want := int64(len(p))
+	if want > deviceSize-off {
+		want = deviceSize - off
 		err = io.EOF
-		logger().Debug("reached EOF", slog.Int("lba", int(r.lba)), slog.Int("endOffset", endOffset))
-		blocks = int(r.lba - startBlock)
-	} else if endOffset%int(r.blocksize) != 0 {
-		// if endoffset is not block aligned then we need to read one more block
-		blocks++
+		logger().Debug("reached EOF", slog.Int64("lba", r.lba), slog.Int64("bytes", want))
 	}
 
-	blocks = min(blocks, int(r.lba)-int(startBlock))
+	// the blocks covering [off, off+want), including the partial blocks at
+	// either end
+	startBlock := off / r.blocksize
+	blockOffset := off % r.blocksize
+	blocks := blocksToCover(blockOffset+want, r.blocksize)
+	logger().Debug(fmt.Sprintf("offset %d into block %d", blockOffset, startBlock))
+
 	readBytes, readErr := r.dev.Read16(Read16{
 		LBA:       int(startBlock),
 		BlockSize: int(r.blocksize),
-		Blocks:    blocks,
+		Blocks:    int(blocks),
 	})
 	if readErr != nil {
 		return 0, fmt.Errorf("iscsi device read error: %w", readErr)
 	}
-
-	blockOffset := off % r.blocksize
-	logger().Debug(fmt.Sprintf("offset %d into block %d", blockOffset, startBlock))
-
-	var result []byte
-	l := min(len(p), len(readBytes))
-	if err == io.EOF {
-		result = readBytes[blockOffset:]
-	} else if blockOffset > 0 {
-		// sometimes we get fewer than the number of requested blocks
-		// even when not near the max lba? (at least when testing with gotgt)
-		// unclear yet if this is acceptable for iscsi or a flaw in gotgt
-		// make sure not to overshoot length of readBytes in that case
-		result = readBytes[blockOffset:min(l+int(blockOffset), len(readBytes))]
-	} else {
-		result = readBytes[:l]
+	if int64(len(readBytes)) < blockOffset+want {
+		// the target under-delivered.  returning what did arrive would be a
+		// short read with a nil error, which io.ReaderAt forbids
+		return 0, fmt.Errorf("read %d blocks at lba %d: got %d bytes, want %d: %w",
+			blocks, startBlock, len(readBytes), blockOffset+want, io.ErrUnexpectedEOF)
 	}
 
-	logger().Debug("finished read", slog.Int("bytes", len(result)))
-	return copy(p, result), err
+	n = copy(p[:want], readBytes[blockOffset:])
+	logger().Debug("finished read", slog.Int("bytes", n))
+	return n, err
+}
+
+// blocksToCover returns how many whole blocks are needed to hold n bytes,
+// rounding up when the last block is only partly used.  ie. with 512 byte
+// blocks, 512 bytes need 1 block and 513 bytes need 2.
+func blocksToCover(n, blocksize int64) int64 {
+	// integer division truncates, so adding blocksize-1 first rounds any
+	// partial block up to a whole one: ceil(n/blocksize)
+	return (n + blocksize - 1) / blocksize
 }
 
 // TODO: (willgorman) tests
