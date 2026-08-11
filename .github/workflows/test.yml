@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: dx-v2a-ghararc-fra-ub-eu-lab-gharc
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
