@@ -1,0 +1,34 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  test:
+    runs-on: dx-v2a-ghararc-fra-ub-eu-lab-gharc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Flox
+        uses: flox/install-flox-action@v2
+
+      - name: Run tests
+        uses: flox/activate-action@v1
+        with:
+          command: go test -json ./... > testresults.json
+
+      - name: Test summary
+        uses: dorny/test-reporter@v3
+        if: always()
+        with:
+          name: Go Tests
+          path: testresults.json
+          reporter: golang-json
